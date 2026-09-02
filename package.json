@@ -1,0 +1,24 @@
+{
+  "name":"foot-sports-landing",
+  "version":"1.0.0",
+  "private":true,
+  "scripts":{"dev":"next dev","build":"next build","start":"next start","lint":"next lint"},
+  "dependencies":{
+    "@react-three/drei":"latest",
+    "@react-three/fiber":"latest",
+    "framer-motion":"latest",
+    "lucide-react":"latest",
+    "next":"latest",
+    "react":"latest",
+    "react-dom":"latest",
+    "three":"latest"
+  },
+  "devDependencies":{
+    "@tailwindcss/postcss":"latest",
+    "tailwindcss":"latest",
+    "typescript":"latest",
+    "@types/node":"latest",
+    "@types/react":"latest",
+    "@types/react-dom":"latest"
+  }
+}
