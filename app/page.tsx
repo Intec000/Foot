@@ -1,101 +1,719 @@
 "use client";
 
-import {Canvas,useFrame} from "@react-three/fiber";
-import {Float,Environment} from "@react-three/drei";
-import {motion} from "framer-motion";
-import {ArrowRight,BarChart3,Check,ChevronRight,ShieldCheck,Sparkles,TrendingUp,Users,Zap} from "lucide-react";
+import { Canvas, useFrame } from "@react-three/fiber";
+import { Environment } from "@react-three/drei";
+import { motion, useScroll, useSpring, useTransform } from "framer-motion";
+import {
+  ArrowDown,
+  ArrowRight,
+  BarChart3,
+  Check,
+  ChevronRight,
+  ShieldCheck,
+  Sparkles,
+  TrendingUp,
+  Users,
+  Zap,
+} from "lucide-react";
 import * as THREE from "three";
-import {useMemo,useRef} from "react";
+import { useMemo, useRef } from "react";
 
-const AFFILIATE_URL="https://reffpa.com/L?tag=d_6033507m_18609c_&site=6033507&ad=18609";
+const AFFILIATE_URL =
+  "https://reffpa.com/L?tag=d_6033507m_18609c_&site=6033507&ad=18609";
 
-function Ball({children,position,scale=1,speed=2}:{children:React.ReactNode;position:[number,number,number];scale?:number;speed?:number}){
-  const ref=useRef<THREE.Group>(null);
-  useFrame((state,delta)=>{
-    if(!ref.current)return;
-    ref.current.rotation.y+=delta*.35;
-    ref.current.rotation.x+=delta*.1;
-    ref.current.rotation.x=THREE.MathUtils.lerp(ref.current.rotation.x,state.pointer.y*.15,.025);
-    ref.current.rotation.y+=state.pointer.x*.12*delta;
+/* =========================================================
+   REALISTIC 3D FOOTBALL
+   Native geometry only — no external textures/assets.
+========================================================= */
+
+function FootballMesh() {
+  const group = useRef<THREE.Group>(null);
+  const ball = useRef<THREE.Mesh>(null);
+
+  const patches = useMemo(() => {
+    const points: THREE.Vector3[] = [];
+    const count = 32;
+    const radius = 1.015;
+
+    for (let i = 0; i < count; i++) {
+      const y = 1 - (i / (count - 1)) * 2;
+      const ringRadius = Math.sqrt(Math.max(0, 1 - y * y));
+      const ringCount = Math.max(1, Math.round(4 + ringRadius * 10));
+
+      for (let j = 0; j < ringCount; j++) {
+        const theta = (j / ringCount) * Math.PI * 2 + i * 0.37;
+
+        points.push(
+          new THREE.Vector3(
+            radius * ringRadius * Math.cos(theta),
+            radius * y,
+            radius * ringRadius * Math.sin(theta)
+          )
+        );
+      }
+    }
+
+    return points.filter((_, i) => i % 2 === 0);
+  }, []);
+
+  useFrame((state, delta) => {
+    if (!group.current || !ball.current) return;
+
+    const pointerX = state.pointer.x;
+    const pointerY = state.pointer.y;
+
+    group.current.rotation.y += delta * 0.18;
+    group.current.rotation.x += delta * 0.045;
+
+    group.current.rotation.x = THREE.MathUtils.lerp(
+      group.current.rotation.x,
+      pointerY * 0.12,
+      0.025
+    );
+
+    group.current.rotation.z = THREE.MathUtils.lerp(
+      group.current.rotation.z,
+      -pointerX * 0.08,
+      0.025
+    );
   });
-  return <Float speed={speed} rotationIntensity={.7} floatIntensity={.7}><group ref={ref} position={position} scale={scale}>{children}</group></Float>;
+
+  return (
+    <group ref={group}>
+      {/* Soft leather shell */}
+      <mesh ref={ball} castShadow receiveShadow>
+        <sphereGeometry args={[1.72, 96, 96]} />
+        <meshStandardMaterial
+          color="#f1f0e9"
+          roughness={0.68}
+          metalness={0.02}
+        />
+      </mesh>
+
+      {/* Pentagonal panels */}
+      {patches.map((point, index) => {
+        const normal = point.clone().normalize();
+        const quaternion = new THREE.Quaternion();
+
+        quaternion.setFromUnitVectors(
+          new THREE.Vector3(0, 0, 1),
+          normal
+        );
+
+        return (
+          <mesh
+            key={index}
+            position={point.clone().multiplyScalar(1.006)}
+            quaternion={quaternion}
+            scale={0.78}
+          >
+            <circleGeometry args={[0.14, 5]} />
+            <meshStandardMaterial
+              color="#111111"
+              roughness={0.8}
+            />
+          </mesh>
+        );
+      })}
+
+      {/* Fine panel seams */}
+      <mesh scale={1.008}>
+        <sphereGeometry args={[1.72, 48, 48]} />
+        <meshBasicMaterial
+          color="#0a0a0a"
+          wireframe
+          transparent
+          opacity={0.045}
+        />
+      </mesh>
+    </group>
+  );
 }
 
-function Football({position}:{position:[number,number,number]}){
-  const patches=useMemo(()=>{
-    const a:THREE.Vector3[]=[];
-    for(let i=0;i<18;i++){const p=Math.acos(1-2*(i+.5)/18),t=Math.PI*(1+Math.sqrt(5))*i;a.push(new THREE.Vector3(1.035*Math.sin(p)*Math.cos(t),1.035*Math.cos(p),1.035*Math.sin(p)*Math.sin(t)))}return a;
-  },[]);
-  return <Ball position={position} speed={2.2}>
-    <mesh><sphereGeometry args={[1,64,64]}/><meshStandardMaterial color="#f4f4f4" roughness={.35}/></mesh>
-    {patches.map((p,i)=>{const q=new THREE.Quaternion();q.setFromUnitVectors(new THREE.Vector3(0,0,1),p.clone().normalize());return <mesh key={i} position={p} quaternion={q}><circleGeometry args={[.16,6]}/><meshStandardMaterial color="#090909"/></mesh>})}
-  </Ball>;
+/* =========================================================
+   SCROLL PHYSICS
+   The ball starts floating in the hero, then falls and
+   performs a small damped bounce when the user scrolls.
+========================================================= */
+
+function FallingFootball({
+  scrollProgress,
+}: {
+  scrollProgress: number;
+}) {
+  const group = useRef<THREE.Group>(null);
+  const velocity = useRef(0);
+  const currentY = useRef(0.2);
+
+  useFrame((_, delta) => {
+    if (!group.current) return;
+
+    const progress = THREE.MathUtils.clamp(scrollProgress, 0, 1);
+
+    // Before scrolling: subtle floating position.
+    // During scroll: target becomes lower, simulating gravity.
+    const fallStart = 0.035;
+    const fallProgress = THREE.MathUtils.smoothstep(
+      progress,
+      fallStart,
+      0.34
+    );
+
+    const targetY = THREE.MathUtils.lerp(0.2, -4.5, fallProgress);
+
+    // Follow the scroll-driven target with spring-like inertia.
+    velocity.current +=
+      (targetY - currentY.current) * 9 * delta;
+    velocity.current *= Math.pow(0.78, delta * 60);
+
+    currentY.current += velocity.current * delta;
+
+    // Small rebound around the lower section.
+    if (fallProgress > 0.72) {
+      const bounceTime = (fallProgress - 0.72) / 0.28;
+      const bounce =
+        Math.sin(bounceTime * Math.PI * 3) *
+        Math.exp(-bounceTime * 5) *
+        0.42;
+
+      currentY.current += bounce;
+    }
+
+    group.current.position.y = currentY.current;
+
+    // Ball rolls as it lands.
+    group.current.rotation.x +=
+      delta * (0.5 + Math.abs(velocity.current) * 0.18);
+
+    group.current.rotation.z +=
+      delta * 0.12;
+
+    // Subtle parallax.
+    group.current.position.x = THREE.MathUtils.lerp(
+      group.current.position.x,
+      -0.15 + progress * 0.9,
+      0.035
+    );
+  });
+
+  return (
+    <group ref={group} position={[-0.15, 0.2, 0]}>
+      <FootballMesh />
+    </group>
+  );
 }
 
-function Basketball({position}:{position:[number,number,number]}){
-  const rings=[[Math.PI/2,0,0],[0,Math.PI/2,0],[0,0,Math.PI/2],[Math.PI/4,0,Math.PI/4]];
-  return <Ball position={position} speed={1.7}><mesh><sphereGeometry args={[1,64,64]}/><meshStandardMaterial color="#f46a16" roughness={.65}/></mesh>{rings.map((r,i)=><mesh key={i} rotation={r as [number,number,number]}><torusGeometry args={[1.002,i===3?.014:.018,8,96]}/><meshStandardMaterial color="#111"/></mesh>)}</Ball>;
+function SportsScene({
+  scrollProgress,
+}: {
+  scrollProgress: number;
+}) {
+  return (
+    <Canvas
+      camera={{
+        position: [0, 0, 10],
+        fov: 34,
+      }}
+      dpr={[1, 1.5]}
+      shadows
+      gl={{
+        antialias: true,
+        alpha: true,
+      }}
+    >
+      <ambientLight intensity={0.35} />
+
+      <pointLight
+        position={[4, 5, 6]}
+        intensity={45}
+        color="#d9ff8a"
+        distance={16}
+      />
+
+      <pointLight
+        position={[-5, 1, 4]}
+        intensity={30}
+        color="#00d9ff"
+        distance={15}
+      />
+
+      <spotLight
+        position={[0, 6, 5]}
+        intensity={35}
+        angle={0.45}
+        penumbra={1}
+        castShadow
+        color="#ffffff"
+      />
+
+      <FallingFootball scrollProgress={scrollProgress} />
+
+      <Environment preset="night" />
+    </Canvas>
+  );
 }
 
-function Tennis({position}:{position:[number,number,number]}){
-  return <Ball position={position} scale={.84} speed={2.5}><mesh><sphereGeometry args={[1,64,64]}/><meshStandardMaterial color="#c8ff16" emissive="#6aff00" emissiveIntensity={.13} roughness={.72}/></mesh><mesh rotation={[Math.PI/2,.52,0]} scale={[1,.68,1]}><torusGeometry args={[1.005,.026,10,128]}/><meshStandardMaterial color="#f7ffe6"/></mesh><mesh rotation={[Math.PI/2,-.52,0]} scale={[1,.68,1]}><torusGeometry args={[1.005,.026,10,128]}/><meshStandardMaterial color="#f7ffe6"/></mesh></Ball>;
+/* =========================================================
+   UI
+========================================================= */
+
+function CTA({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
+  return (
+    <a
+      href={AFFILIATE_URL}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group relative inline-flex h-14 items-center justify-center gap-2 overflow-hidden rounded-full bg-[#c8ff16] px-8 text-sm font-black text-black shadow-[0_0_45px_rgba(200,255,22,.18)] transition-all duration-300 hover:scale-[1.025] hover:shadow-[0_0_70px_rgba(200,255,22,.32)]"
+    >
+      <span className="relative z-10">
+        {children}
+      </span>
+      <ArrowRight
+        size={17}
+        className="relative z-10 transition-transform group-hover:translate-x-1"
+      />
+      <span className="absolute inset-0 -translate-x-full bg-white/50 transition-transform duration-700 group-hover:translate-x-full" />
+    </a>
+  );
 }
 
-function Volleyball({position}:{position:[number,number,number]}){
-  const bands=[[[Math.PI/2,0,0],"#0fd3ff"],[[0,Math.PI/2,0],"#b8ff21"],[[.7,.3,1.2],"#d7ff36"]] as const;
-  return <Ball position={position} speed={1.9}><mesh><sphereGeometry args={[1,64,64]}/><meshStandardMaterial color="#eee" roughness={.4}/></mesh>{bands.map(([r,c],i)=><mesh key={i} rotation={r as [number,number,number]}><torusGeometry args={[1.003,.055,12,128]}/><meshStandardMaterial color={c} emissive={c} emissiveIntensity={.08}/></mesh>)}</Ball>;
-}
+const features = [
+  {
+    icon: BarChart3,
+    n: "01",
+    title: "Forme récente",
+    text: "Les dernières performances réunies pour identifier rapidement la dynamique d’une équipe.",
+  },
+  {
+    icon: TrendingUp,
+    n: "02",
+    title: "Tendances",
+    text: "Buts, résultats et statistiques utiles présentés sans noyer l’essentiel.",
+  },
+  {
+    icon: ShieldCheck,
+    n: "03",
+    title: "Contexte",
+    text: "Un regard complémentaire sur les facteurs susceptibles d’influencer la rencontre.",
+  },
+];
 
-function SportsScene(){
-  return <Canvas camera={{position:[0,0,8.5],fov:38}} dpr={[1,1.5]} gl={{antialias:true,alpha:true}}>
-    <ambientLight intensity={.5}/>
-    <pointLight position={[4,5,5]} intensity={35} color="#00eaff" distance={14}/>
-    <pointLight position={[-5,-2,5]} intensity={30} color="#8cff00" distance={14}/>
-    <directionalLight position={[0,6,4]} intensity={2.3} color="#fff"/>
-    <Football position={[-2.2,1.25,0]}/><Basketball position={[1.95,1.25,-.3]}/><Tennis position={[-1.65,-1.55,.7]}/><Volleyball position={[2.1,-1.4,.3]}/>
-    <Environment preset="night"/>
-  </Canvas>;
-}
+export default function Home() {
+  const { scrollYProgress } = useScroll();
 
-const features=[
-  [BarChart3,"01","Statistiques","Lecture des performances récentes, buts marqués, buts encaissés et tendances importantes."],
-  [TrendingUp,"02","Dynamique","Comprendre rapidement la forme des équipes et les scénarios les plus intéressants avant le coup d’envoi."],
-  [ShieldCheck,"03","Contexte","Une présentation claire des facteurs qui peuvent influencer une rencontre sans surcharge d’information."]
-] as const;
+  const smoothScroll = useSpring(scrollYProgress, {
+    stiffness: 80,
+    damping: 22,
+    mass: 0.7,
+  });
 
-function CTA({children,secondary=false}:{children:React.ReactNode;secondary?:boolean}){
-  return <a href={AFFILIATE_URL} target="_blank" rel="noopener noreferrer" className={`group inline-flex h-14 items-center justify-center gap-2 rounded-full px-7 text-sm font-bold transition-all ${secondary?"border border-white/10 bg-white/[.04] text-white hover:bg-white/[.08]":"bg-[#c8ff16] text-black shadow-[0_0_40px_rgba(200,255,22,.22)] hover:shadow-[0_0_60px_rgba(200,255,22,.4)]"}`}>{children}<ArrowRight size={17} className="transition group-hover:translate-x-1"/></a>;
-}
+  const heroOpacity = useTransform(
+    smoothScroll,
+    [0, 0.18],
+    [1, 0]
+  );
 
-export default function Home(){
-  return <main className="min-h-screen overflow-hidden bg-[#050505] text-white selection:bg-[#c8ff16] selection:text-black">
-    <div className="pointer-events-none fixed inset-0"><div className="absolute left-[15%] top-[10%] h-[500px] w-[500px] rounded-full bg-cyan-400/[.06] blur-[140px]"/><div className="absolute bottom-[5%] right-[10%] h-[500px] w-[500px] rounded-full bg-[#b7ff16]/[.05] blur-[150px]"/><div className="absolute inset-0 opacity-[.13] [background-image:linear-gradient(rgba(255,255,255,.06)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.06)_1px,transparent_1px)] [background-size:60px_60px]"/></div>
+  return (
+    <main className="min-h-screen overflow-x-hidden bg-[#050505] text-white selection:bg-[#c8ff16] selection:text-black">
+      {/* =====================================================
+          ATMOSPHERE
+      ====================================================== */}
 
-    <header className="fixed left-0 right-0 top-0 z-50"><div className="mx-auto max-w-[1440px] px-5 pt-5 lg:px-8"><div className="flex h-[70px] items-center justify-between rounded-full border border-white/[.08] bg-black/50 px-5 backdrop-blur-2xl lg:px-7">
-      <div className="flex items-center gap-3"><div className="flex h-10 w-10 items-center justify-center rounded-xl border border-[#c8ff16]/30 bg-[#c8ff16]/10"><Zap size={19} className="fill-[#c8ff16] text-[#c8ff16]"/></div><div><div className="text-base font-black tracking-tight">EDGE<span className="text-[#c8ff16]">SPORT</span></div><div className="hidden text-[9px] uppercase tracking-[.26em] text-white/30 sm:block">Sports Intelligence</div></div></div>
-      <nav className="hidden items-center gap-8 text-sm font-medium text-white/50 lg:flex"><a href="#features" className="hover:text-white">Analyses</a><a href="#process" className="hover:text-white">Méthode</a><a href="#stats" className="hover:text-white">Avantages</a></nav>
-      <a href={AFFILIATE_URL} target="_blank" rel="noopener noreferrer" className="rounded-full bg-white px-5 py-3 text-xs font-bold text-black transition hover:bg-[#c8ff16] sm:text-sm">Accéder à 1xBet</a>
-    </div></div></header>
+      <div className="pointer-events-none fixed inset-0 z-0">
+        <div className="absolute left-[20%] top-[5%] h-[600px] w-[600px] rounded-full bg-cyan-400/[0.045] blur-[160px]" />
+        <div className="absolute bottom-[10%] right-[5%] h-[600px] w-[600px] rounded-full bg-[#c8ff16]/[0.035] blur-[160px]" />
 
-    <section className="relative min-h-screen"><div className="relative z-10 mx-auto grid min-h-screen max-w-[1440px] items-center px-5 pb-10 pt-32 lg:grid-cols-[.9fr_1.1fr] lg:px-8 lg:pt-20">
-      <div className="relative z-20"><motion.div initial={{opacity:0,y:20}} animate={{opacity:1,y:0}} transition={{duration:.7}} className="mb-7 inline-flex items-center gap-2 rounded-full border border-[#c8ff16]/20 bg-[#c8ff16]/[.06] px-4 py-2 text-[11px] font-bold uppercase tracking-[.18em] text-[#d7ff62]"><Sparkles size={13}/>Analyse sportive nouvelle génération</motion.div>
-      <motion.h1 initial={{opacity:0,y:35}} animate={{opacity:1,y:0}} transition={{duration:.85,delay:.08}} className="max-w-[760px] text-[3.5rem] font-black leading-[.91] tracking-[-.065em] sm:text-[4.6rem] lg:text-[5.2rem] xl:text-[6.2rem]">LE SPORT<br/><span className="text-white/25">SOUS UN</span><br/><span className="bg-gradient-to-r from-[#c8ff16] via-[#dfff74] to-cyan-300 bg-clip-text text-transparent">AUTRE ANGLE.</span></motion.h1>
-      <motion.p initial={{opacity:0,y:25}} animate={{opacity:1,y:0}} transition={{duration:.8,delay:.18}} className="mt-7 max-w-xl text-base leading-8 text-white/46 sm:text-lg">Statistiques, tendances, forme des équipes et lecture des rencontres avant match dans une expérience pensée pour aller droit à l’essentiel.</motion.p>
-      <motion.div initial={{opacity:0,y:25}} animate={{opacity:1,y:0}} transition={{duration:.8,delay:.28}} className="mt-9 flex flex-wrap gap-3"><CTA>Découvrir 1xBet</CTA><a href="#features" className="inline-flex h-14 items-center justify-center gap-2 rounded-full border border-white/10 px-7 text-sm font-semibold text-white/70 hover:bg-white/[.04] hover:text-white">Voir nos analyses</a></motion.div>
-      <div className="mt-10 flex flex-wrap gap-x-7 gap-y-3 text-xs text-white/35"><span className="flex items-center gap-2"><Check size={14} className="text-[#c8ff16]"/>Avant-match</span><span className="flex items-center gap-2"><Check size={14} className="text-[#c8ff16]"/>Statistiques clés</span><span className="flex items-center gap-2"><Check size={14} className="text-[#c8ff16]"/>Lecture simplifiée</span></div></div>
-      <motion.div initial={{opacity:0,scale:.86,x:40}} animate={{opacity:1,scale:1,x:0}} transition={{duration:1.3,ease:[.16,1,.3,1]}} className="relative mt-8 h-[480px] lg:mt-0 lg:h-[750px]"><div className="pointer-events-none absolute left-1/2 top-1/2 h-[55%] w-[55%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-cyan-300/[.08] blur-[90px]"/><SportsScene/><div className="pointer-events-none absolute bottom-[5%] left-1/2 h-px w-[70%] -translate-x-1/2 bg-gradient-to-r from-transparent via-white/20 to-transparent"/></motion.div>
-    </div></section>
+        <div className="absolute inset-0 opacity-[0.10] [background-image:linear-gradient(rgba(255,255,255,.06)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,.06)_1px,transparent_1px)] [background-size:70px_70px]" />
+      </div>
 
-    <section id="stats" className="relative z-10 border-y border-white/[.07]"><div className="mx-auto grid max-w-[1440px] grid-cols-2 divide-x divide-white/[.07] px-5 lg:grid-cols-4 lg:px-8">{[["01","Sélection","Matchs ciblés"],["02","Data","Données utiles"],["03","Analyse","Lecture claire"],["04","Décision","Plus de contexte"]].map(([n,t,l])=><div key={n} className="px-5 py-8 lg:px-10 lg:py-10"><div className="mb-5 text-xs font-black text-[#c8ff16]">{n}</div><div className="text-xl font-bold">{t}</div><div className="mt-1 text-xs text-white/30">{l}</div></div>)}</div></section>
+      {/* =====================================================
+          NAV
+      ====================================================== */}
 
-    <section id="features" className="relative z-10 py-28"><div className="mx-auto max-w-[1440px] px-5 lg:px-8"><div className="mb-16 grid gap-7 lg:grid-cols-2"><div><div className="mb-5 text-xs font-black uppercase tracking-[.22em] text-[#c8ff16]">L’essentiel, pas le bruit.</div><h2 className="max-w-2xl text-4xl font-black leading-[1.02] tracking-[-.04em] sm:text-5xl lg:text-6xl">Des données transformées en <span className="text-white/30">lecture claire.</span></h2></div><p className="max-w-xl self-end text-base leading-8 text-white/40 lg:justify-self-end">Nous organisons les informations essentielles autour du match afin de réduire le bruit : dynamique récente, statistiques offensives, tendances et contexte.</p></div>
-      <div className="grid gap-4 lg:grid-cols-3">{features.map(([Icon,n,t,d],i)=><motion.article key={t} initial={{opacity:0,y:30}} whileInView={{opacity:1,y:0}} viewport={{once:true}} transition={{delay:i*.1}} className="group relative min-h-[360px] overflow-hidden rounded-[32px] border border-white/[.08] bg-white/[.025] p-8 hover:border-[#c8ff16]/25"><div className="flex items-start justify-between"><div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/[.04]"><Icon size={23} className="text-[#c8ff16]"/></div><span className="font-mono text-xs text-white/20">/ {n}</span></div><div className="absolute bottom-8 left-8 right-8"><h3 className="text-2xl font-bold">{t}</h3><p className="mt-4 max-w-sm leading-7 text-white/38">{d}</p></div></motion.article>)}</div>
-    </div></section>
+      <header className="fixed left-0 right-0 top-0 z-50">
+        <div className="mx-auto max-w-[1480px] px-4 pt-4 sm:px-6 lg:px-8">
+          <div className="flex h-[68px] items-center justify-between rounded-2xl border border-white/[0.08] bg-[#050505]/75 px-4 backdrop-blur-2xl sm:px-6">
+            <a href="#" className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#c8ff16] text-black">
+                <Zap
+                  size={18}
+                  fill="currentColor"
+                />
+              </div>
 
-    <section id="process" className="relative z-10 pb-28"><div className="mx-auto max-w-[1440px] px-5 lg:px-8"><div className="overflow-hidden rounded-[38px] border border-white/[.08] bg-gradient-to-br from-white/[.055] to-transparent"><div className="grid lg:grid-cols-[.8fr_1.2fr]"><div className="border-b border-white/[.08] p-8 lg:border-b-0 lg:border-r lg:p-14"><span className="text-xs font-bold uppercase tracking-[.23em] text-[#c8ff16]">Notre méthode</span><h2 className="mt-6 text-4xl font-black tracking-[-.04em] lg:text-5xl">Comprendre<br/>avant d’agir.</h2><p className="mt-6 max-w-sm leading-7 text-white/38">Une expérience construite autour d’une idée simple : rendre les informations sportives plus faciles à interpréter.</p></div><div>{[["01","Identifier","Repérer les rencontres qui méritent réellement une analyse."],["02","Analyser","Comparer forme récente, statistiques et contexte."],["03","Synthétiser","Transformer plusieurs données en lecture concise."],["04","Décider","Utiliser les informations disponibles selon votre propre jugement."]].map(([n,t,d])=><div key={n} className="group grid gap-5 border-b border-white/[.07] p-7 last:border-0 sm:grid-cols-[60px_180px_1fr_30px] sm:items-center lg:px-10"><div className="font-mono text-xs text-[#c8ff16]">{n}</div><div className="font-bold">{t}</div><div className="text-sm leading-6 text-white/35">{d}</div><ChevronRight size={18} className="hidden text-white/20 transition group-hover:translate-x-1 group-hover:text-[#c8ff16] sm:block"/></div>)}</div></div></div></div></section>
+              <div>
+                <div className="text-[15px] font-black tracking-[-0.03em]">
+                  EDGE<span className="text-[#c8ff16]">SPORT</span>
+                </div>
 
-    <section className="relative z-10 pb-12"><div className="mx-auto max-w-[1440px] px-5 lg:px-8"><div className="relative overflow-hidden rounded-[38px] border border-[#c8ff16]/15 bg-[#c8ff16] px-6 py-20 text-center text-black sm:px-10"><div className="relative z-10"><div className="mx-auto mb-7 flex h-12 w-12 items-center justify-center rounded-full bg-black text-[#c8ff16]"><Zap size={19} fill="currentColor"/></div><h2 className="mx-auto max-w-4xl text-4xl font-black leading-[.95] tracking-[-.055em] sm:text-6xl lg:text-7xl">PRÊT À PASSER<br/>À L’ACTION ?</h2><p className="mx-auto mt-7 max-w-xl text-sm leading-7 text-black/60 sm:text-base">Accédez à la plateforme et découvrez les opportunités disponibles sur les événements sportifs.</p><a href={AFFILIATE_URL} target="_blank" rel="noopener noreferrer" className="mt-9 inline-flex h-14 items-center gap-2 rounded-full bg-black px-8 text-sm font-bold text-white transition hover:scale-[1.03]">Accéder à 1xBet<ArrowRight size={17}/></a></div></div></div></section>
+                <div className="hidden text-[8px] uppercase tracking-[0.28em] text-white/30 sm:block">
+                  Sports Intelligence
+                </div>
+              </div>
+            </a>
 
-    <footer className="relative z-10"><div className="mx-auto flex max-w-[1440px] flex-col gap-7 px-5 py-10 text-xs text-white/25 sm:flex-row sm:items-center sm:justify-between lg:px-8"><div>© {new Date().getFullYear()} EDGE SPORT</div><div className="max-w-2xl text-center leading-6">18+ · Jouez de manière responsable. Les paris sportifs comportent un risque de perte financière. Aucun résultat n’est garanti.</div><div className="flex items-center gap-2"><Users size={13}/>18+</div></div></footer>
-  </main>;
+            <nav className="hidden items-center gap-9 text-xs font-semibold text-white/40 lg:flex">
+              <a
+                href="#features"
+                className="transition hover:text-white"
+              >
+                ANALYSE
+              </a>
+              <a
+                href="#method"
+                className="transition hover:text-white"
+              >
+                MÉTHODE
+              </a>
+              <a
+                href="#why"
+                className="transition hover:text-white"
+              >
+                POURQUOI NOUS
+              </a>
+            </nav>
+
+            <a
+              href={AFFILIATE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-full border border-white/10 bg-white px-5 py-3 text-[11px] font-black text-black transition hover:bg-[#c8ff16] sm:text-xs"
+            >
+              1xBET
+            </a>
+          </div>
+        </div>
+      </header>
+
+      {/* =====================================================
+          HERO + 3D FOOTBALL
+      ====================================================== */}
+
+      <section className="relative min-h-[125vh]">
+        <div className="pointer-events-none absolute inset-0 z-[1]">
+          <SportsScene
+            scrollProgress={0}
+          />
+        </div>
+
+        <div className="relative z-10 mx-auto flex min-h-screen max-w-[1480px] items-center px-5 pb-24 pt-32 sm:px-8 lg:px-12">
+          <motion.div
+            style={{ opacity: heroOpacity }}
+            className="relative max-w-3xl"
+          >
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.7 }}
+              className="mb-7 inline-flex items-center gap-2 border-l-2 border-[#c8ff16] pl-3 text-[10px] font-bold uppercase tracking-[0.25em] text-white/50"
+            >
+              <Sparkles
+                size={13}
+                className="text-[#c8ff16]"
+              />
+              Analyse sportive avant-match
+            </motion.div>
+
+            <motion.h1
+              initial={{ opacity: 0, y: 35 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.85, delay: 0.08 }}
+              className="text-[4rem] font-black leading-[0.86] tracking-[-0.075em] sm:text-[5.7rem] lg:text-[7rem] xl:text-[8.2rem]"
+            >
+              VOYEZ
+              <br />
+              LE MATCH
+              <br />
+              <span className="text-white/20">
+                AUTREMENT.
+              </span>
+            </motion.h1>
+
+            <motion.p
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.2 }}
+              className="mt-8 max-w-lg text-sm leading-7 text-white/45 sm:text-base"
+            >
+              Forme récente, statistiques et tendances :
+              une lecture simple des informations qui
+              comptent avant le coup d’envoi.
+            </motion.p>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.8, delay: 0.3 }}
+              className="mt-8 flex flex-wrap items-center gap-3"
+            >
+              <CTA>Découvrir 1xBet</CTA>
+
+              <a
+                href="#features"
+                className="inline-flex h-14 items-center gap-2 rounded-full border border-white/10 px-6 text-xs font-bold text-white/60 transition hover:border-white/20 hover:text-white"
+              >
+                Explorer
+                <ArrowDown size={15} />
+              </a>
+            </motion.div>
+
+            <div className="mt-9 flex flex-wrap gap-x-6 gap-y-3 text-[10px] uppercase tracking-[0.16em] text-white/25">
+              <span className="flex items-center gap-2">
+                <Check
+                  size={12}
+                  className="text-[#c8ff16]"
+                />
+                Avant-match
+              </span>
+
+              <span className="flex items-center gap-2">
+                <Check
+                  size={12}
+                  className="text-[#c8ff16]"
+                />
+                Data sportive
+              </span>
+
+              <span className="flex items-center gap-2">
+                <Check
+                  size={12}
+                  className="text-[#c8ff16]"
+                />
+                Lecture claire
+              </span>
+            </div>
+          </motion.div>
+        </div>
+
+        <div className="pointer-events-none absolute bottom-16 left-1/2 z-20 hidden -translate-x-1/2 lg:block">
+          <div className="flex flex-col items-center gap-3 text-[8px] uppercase tracking-[0.35em] text-white/20">
+            Scroll
+
+            <div className="h-12 w-px bg-gradient-to-b from-[#c8ff16] to-transparent" />
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+          INTRO
+      ====================================================== */}
+
+      <section
+        id="features"
+        className="relative z-10 border-y border-white/[0.07] py-24"
+      >
+        <div className="mx-auto max-w-[1480px] px-5 sm:px-8 lg:px-12">
+          <div className="grid gap-12 lg:grid-cols-[1fr_1.4fr]">
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#c8ff16]">
+                01 / Intelligence
+              </div>
+
+              <h2 className="mt-6 max-w-xl text-4xl font-black leading-[0.95] tracking-[-0.055em] sm:text-5xl lg:text-6xl">
+                Moins de bruit.
+                <br />
+                <span className="text-white/25">
+                  Plus de signal.
+                </span>
+              </h2>
+            </div>
+
+            <p className="max-w-2xl self-end text-base leading-8 text-white/40">
+              L’objectif n’est pas de vous donner des
+              centaines de chiffres. C’est de mettre en
+              évidence les informations pertinentes afin
+              de mieux comprendre une rencontre avant son
+              commencement.
+            </p>
+          </div>
+
+          <div className="mt-16 grid gap-px overflow-hidden border border-white/[0.08] bg-white/[0.08] lg:grid-cols-3">
+            {features.map((feature, index) => {
+              const Icon = feature.icon;
+
+              return (
+                <motion.article
+                  key={feature.title}
+                  initial={{ opacity: 0, y: 25 }}
+                  whileInView={{
+                    opacity: 1,
+                    y: 0,
+                  }}
+                  viewport={{ once: true }}
+                  transition={{
+                    delay: index * 0.1,
+                  }}
+                  className="group relative min-h-[330px] bg-[#080808] p-8 transition hover:bg-[#0b0b0b] lg:p-10"
+                >
+                  <div className="flex justify-between">
+                    <Icon
+                      size={23}
+                      className="text-[#c8ff16]"
+                    />
+
+                    <span className="font-mono text-[10px] text-white/20">
+                      {feature.n}
+                    </span>
+                  </div>
+
+                  <div className="absolute bottom-9 left-8 right-8 lg:left-10 lg:right-10">
+                    <h3 className="text-2xl font-bold tracking-tight">
+                      {feature.title}
+                    </h3>
+
+                    <p className="mt-4 max-w-sm text-sm leading-7 text-white/35">
+                      {feature.text}
+                    </p>
+                  </div>
+                </motion.article>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+          METHOD
+      ====================================================== */}
+
+      <section
+        id="method"
+        className="relative z-10 py-28"
+      >
+        <div className="mx-auto max-w-[1480px] px-5 sm:px-8 lg:px-12">
+          <div className="grid gap-14 lg:grid-cols-[0.75fr_1.25fr]">
+            <div>
+              <div className="font-mono text-[10px] uppercase tracking-[0.3em] text-[#c8ff16]">
+                02 / Process
+              </div>
+
+              <h2 className="mt-6 text-4xl font-black leading-[0.94] tracking-[-0.05em] sm:text-5xl">
+                Une méthode
+                <br />
+                <span className="text-white/25">
+                  en quatre étapes.
+                </span>
+              </h2>
+            </div>
+
+            <div>
+              {[
+                [
+                  "01",
+                  "Identifier",
+                  "Repérer les rencontres qui méritent une analyse.",
+                ],
+                [
+                  "02",
+                  "Comparer",
+                  "Mettre en parallèle forme, résultats et statistiques.",
+                ],
+                [
+                  "03",
+                  "Contextualiser",
+                  "Ajouter les éléments qui peuvent changer la lecture.",
+                ],
+                [
+                  "04",
+                  "Synthétiser",
+                  "Conserver uniquement les informations vraiment utiles.",
+                ],
+              ].map(([n, title, text]) => (
+                <div
+                  key={n}
+                  className="group grid gap-5 border-t border-white/[0.08] py-7 sm:grid-cols-[55px_180px_1fr] sm:items-center"
+                >
+                  <span className="font-mono text-xs text-[#c8ff16]">
+                    {n}
+                  </span>
+
+                  <span className="text-lg font-bold">
+                    {title}
+                  </span>
+
+                  <span className="text-sm leading-6 text-white/35">
+                    {text}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+          CTA
+      ====================================================== */}
+
+      <section
+        id="why"
+        className="relative z-10 pb-10"
+      >
+        <div className="mx-auto max-w-[1480px] px-5 sm:px-8 lg:px-12">
+          <div className="relative overflow-hidden bg-[#c8ff16] px-6 py-20 text-center text-black sm:px-12 lg:py-28">
+            <div className="absolute left-1/2 top-1/2 h-[500px] w-[500px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/40 blur-[130px]" />
+
+            <div className="relative z-10">
+              <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-black text-[#c8ff16]">
+                <Zap
+                  size={18}
+                  fill="currentColor"
+                />
+              </div>
+
+              <h2 className="mx-auto mt-7 max-w-5xl text-5xl font-black leading-[0.9] tracking-[-0.06em] sm:text-7xl lg:text-8xl">
+                LE PROCHAIN
+                <br />
+                MATCH COMMENCE ICI.
+              </h2>
+
+              <p className="mx-auto mt-7 max-w-xl text-sm leading-7 text-black/55 sm:text-base">
+                Explorez la plateforme 1xBet et prenez le
+                temps d’analyser les informations disponibles
+                avant chaque rencontre.
+              </p>
+
+              <a
+                href={AFFILIATE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="group mt-9 inline-flex h-14 items-center gap-2 rounded-full bg-black px-8 text-sm font-black text-white transition hover:scale-[1.03]"
+              >
+                Accéder à 1xBet
+                <ArrowRight
+                  size={17}
+                  className="transition group-hover:translate-x-1"
+                />
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* =====================================================
+          FOOTER
+      ====================================================== */}
+
+      <footer className="relative z-10">
+        <div className="mx-auto flex max-w-[1480px] flex-col gap-5 px-5 py-9 text-[10px] uppercase tracking-[0.08em] text-white/20 sm:flex-row sm:items-center sm:justify-between sm:px-8 lg:px-12">
+          <div>© {new Date().getFullYear()} EDGESPORT</div>
+
+          <div className="max-w-xl text-center normal-case leading-6 tracking-normal">
+            18+ · Jouez de manière responsable. Les paris
+            sportifs comportent un risque de perte financière.
+            Aucun résultat n’est garanti.
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Users size={13} />
+            18+
+          </div>
+        </div>
+      </footer>
+    </main>
+  );
 }
