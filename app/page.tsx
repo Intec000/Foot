@@ -2,7 +2,7 @@
 
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Environment } from "@react-three/drei";
-import { motion, useScroll, useSpring, useTransform } from "framer-motion";
+import { motion, useScroll, useSpring, useTransform, type MotionValue } from "framer-motion";
 import {
   ArrowDown,
   ArrowRight,
@@ -206,7 +206,7 @@ function FallingFootball({
 function SportsScene({
   scrollProgress,
 }: {
-  scrollProgress: number;
+  scrollProgress: MotionValue<number>;
 }) {
   return (
     <Canvas
@@ -246,7 +246,7 @@ function SportsScene({
         color="#ffffff"
       />
 
-      <FallingFootball scrollProgress={scrollProgress} />
+      <FallingFootball scrollProgress={scrollProgress.get()} />
 
       <Environment preset="night" />
     </Canvas>
@@ -396,7 +396,7 @@ export default function Home() {
       <section className="relative min-h-[125vh]">
         <div className="pointer-events-none absolute inset-0 z-[1]">
           <SportsScene
-            scrollProgress={0}
+            scrollProgress={smoothScroll}
           />
         </div>
 
